@@ -52,6 +52,10 @@ function Transaction (network = networks.bitcoin) {
     this.type = 0
     this.extraPayload = Buffer.alloc(0)
   }
+  if (coins.isDecred(network)) {
+    this.type = 0
+    this.expiry = 0
+  }
   if (coins.hasTimestamp(network)) {
     this.timestamp = 0
   }
@@ -69,6 +73,7 @@ Transaction.ADVANCED_TRANSACTION_FLAG = 0x01
 
 var EMPTY_SCRIPT = Buffer.allocUnsafe(0)
 var EMPTY_WITNESS = []
+var EMPTY_WITNESS_DECRED = {}
 var ZERO = Buffer.from('0000000000000000000000000000000000000000000000000000000000000000', 'hex')
 var ONE = Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')
 // Used to represent the absence of a value
@@ -96,6 +101,9 @@ Transaction.DASH_PROVIDER_UPDATE_REVOKE = 4
 Transaction.DASH_COINBASE = 5
 Transaction.DASH_QUORUM_COMMITMENT = 6
 
+Transaction.DECRED_TX_VERSION = 1
+Transaction.DECRED_TX_SERIALIZE_FULL = 0
+
 Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStrict) {
   var offset = 0
   function readSlice (n) {
@@ -106,6 +114,12 @@ Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStric
   function readUInt8 () {
     var i = buffer.readUInt8(offset)
     offset += 1
+    return i
+  }
+
+  function readUInt16 () {
+    var i = buffer.readUInt16LE(offset)
+    offset += 2
     return i
   }
 
@@ -289,13 +303,24 @@ Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStric
     }
   }
 
+  var hasWitnesses = false
+  if (coins.isDecred(network)) {
+    tx.type = tx.version >> 16
+    tx.version = tx.version & 0xffff
+    if (tx.version !== Transaction.DECRED_TX_VERSION ||
+      tx.type !== Transaction.DECRED_TX_SERIALIZE_FULL) {
+      throw new Error('Unsupported Decred transaction type')
+    }
+    hasWitnesses = true
+  }
+
   var marker = buffer.readUInt8(offset)
   var flag = buffer.readUInt8(offset + 1)
 
-  var hasWitnesses = false
   if (marker === Transaction.ADVANCED_TRANSACTION_MARKER &&
       flag === Transaction.ADVANCED_TRANSACTION_FLAG &&
-      !coins.isZcashType(network)) {
+      !coins.isZcashType(network) &&
+      !coins.isDecred(network)) {
     offset += 2
     hasWitnesses = true
   }
@@ -308,35 +333,68 @@ Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStric
     tx.timestamp = readUInt32()
   }
 
+  function readVin () {
+    var vin = {
+      hash: readSlice(32),
+      index: readUInt32()
+    }
+    if (coins.isDecred(network)) {
+      vin.tree = readUInt8()
+      vin.witness = EMPTY_WITNESS_DECRED
+    } else {
+      vin.script = readVarSlice()
+      vin.witness = EMPTY_WITNESS
+    }
+    vin.sequence = readUInt32()
+    return vin
+  }
+
   var vinLen = readVarInt()
   for (var i = 0; i < vinLen; ++i) {
-    tx.ins.push({
-      hash: readSlice(32),
-      index: readUInt32(),
-      script: readVarSlice(),
-      sequence: readUInt32(),
-      witness: EMPTY_WITNESS
-    })
+    tx.ins.push(readVin())
+  }
+
+  function readVout () {
+    var vout = {value: Transaction.USE_STRING_VALUES ? readUInt64asString() : readUInt64()}
+    if (coins.isDecred(network)) vout.version = readUInt16()
+    vout.script = readVarSlice()
+    return vout
   }
 
   var voutLen = readVarInt()
   for (i = 0; i < voutLen; ++i) {
-    tx.outs.push({
-      value: Transaction.USE_STRING_VALUES ? readUInt64asString() : readUInt64(),
-      script: readVarSlice()
-    })
+    tx.outs.push(readVout())
+  }
+
+  if (coins.isDecred(network)) {
+    tx.locktime = readUInt32()
+    tx.expiry = readUInt32()
   }
 
   if (hasWitnesses) {
-    for (i = 0; i < vinLen; ++i) {
-      tx.ins[i].witness = readVector()
+    if (coins.isDecred(network)) {
+      var count = readVarInt()
+      if (count !== vinLen) throw new Error('Non equal number of ins and witnesses')
+      tx.ins.forEach(function (vin) {
+        vin.witness = {
+          value: Transaction.USE_STRING_VALUES ? readUInt64asString() : readUInt64(),
+          height: readUInt32(),
+          blockIndex: readUInt32(),
+          script: readVarSlice()
+        }
+      })
+    } else {
+      for (i = 0; i < vinLen; ++i) {
+        tx.ins[i].witness = readVector()
+      }
+      // was this pointless?
+      if (!tx.hasWitnesses()) throw new Error('Transaction has superfluous witness data')
     }
-
-    // was this pointless?
-    if (!tx.hasWitnesses()) throw new Error('Transaction has superfluous witness data')
   }
 
-  tx.locktime = readUInt32()
+  if (!coins.isDecred(network)) {
+    tx.locktime = readUInt32()
+  }
 
   if (coins.isZcashType(network)) {
     if (tx.isOverwinterCompatible()) {

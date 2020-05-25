@@ -408,4 +408,40 @@ describe('Transaction', function () {
       })
     })
   })
+
+  describe('fromBuffer/fromHex for decred', function () {
+    fixtures.decred.valid.forEach(function (testData) {
+      it('parses ' + testData.description, function () {
+        const tx = Transaction.fromHex(testData.hex, networks.decred)
+        assert.equal(tx.version, testData.version)
+        assert.equal(tx.ins.length, testData.insLength)
+        assert.equal(tx.outs.length, testData.outsLength)
+        assert.equal(tx.type, testData.type)
+        assert.equal(tx.locktime, testData.locktime)
+        assert.equal(tx.expiry, testData.expiry)
+        for (var i = 0; i < tx.ins.length; i++) {
+          assert.equal(tx.ins[i].hash.reverse().toString('hex'), testData.ins[i].hash)
+          assert.equal(tx.ins[i].index, testData.ins[i].index)
+          assert.equal(tx.ins[i].tree, testData.ins[i].tree)
+          assert.equal(tx.ins[i].witness.script.toString('hex'), testData.ins[i].script)
+          assert.equal(tx.ins[i].sequence, testData.ins[i].sequence)
+          assert.equal(tx.ins[i].witness.value, testData.ins[i].value)
+          assert.equal(tx.ins[i].witness.height, testData.ins[i].height)
+          assert.equal(tx.ins[i].witness.blockIndex, testData.ins[i].blockIndex)
+        }
+        for (i = 0; i < tx.outs.length; i++) {
+          assert.equal(tx.outs[i].value, testData.outs[i].value)
+          assert.equal(tx.outs[i].script.toString('hex'), testData.outs[i].script)
+          assert.equal(tx.outs[i].version, testData.outs[i].version)
+        }
+      })
+    })
+    fixtures.decred.invalid.forEach(function (f) {
+      it('throws ' + f.exception + ' for ' + f.description, function () {
+        assert.throws(function () {
+          Transaction.fromHex(f.hex, networks.decred)
+        }, new RegExp(f.exception))
+      })
+    })
+  })
 })
