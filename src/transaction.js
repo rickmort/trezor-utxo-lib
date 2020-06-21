@@ -608,11 +608,39 @@ Transaction.prototype.zcashTransactionByteLength = function () {
   return byteLength
 }
 
+Transaction.prototype.decredTransactionByteLength = function () {
+  var byteLength = 4 + varuint.encodingLength(this.ins.length) // version + nIns
+  var nWitness = 0
+  byteLength += this.ins.reduce(function (sum, input) {
+    sum += 32 + 4 + 1 + 4 // prevOut hash + index + tree + sequence
+    // If witness is not empty.
+    if (input.witness.length !== 0) {
+      nWitness += 1
+      sum += 8 + 4 + 4 // value + height + block index
+      sum += varSliceSize(input.witness.script)
+    }
+    return sum
+  }, 0)
+  byteLength += varuint.encodingLength(nWitness)
+  byteLength += varuint.encodingLength(this.outs.length)
+  byteLength += this.outs.reduce(function (sum, output) {
+    sum += 8 + 2 // value + script version
+    sum += varSliceSize(output.script)
+    sum += 4 + 4 // block height + block index
+    return sum
+  }, 0)
+  return byteLength
+}
+
 Transaction.prototype.__byteLength = function (__allowWitness) {
   var hasWitnesses = __allowWitness && this.hasWitnesses()
 
   if (coins.isZcashType(this.network)) {
     return this.zcashTransactionByteLength()
+  }
+
+  if (coins.isDecred(this.network)) {
+    return this.decredTransactionByteLength()
   }
 
   return (
@@ -1099,12 +1127,13 @@ Transaction.prototype.__toBuffer = function (buffer, initialOffset, __allowWitne
     writeUInt8(Transaction.ZCASH_G2_PREFIX_MASK | i.yLsb)
     writeSlice(i.x)
   }
+  var isDecred = coins.isDecred(this.network)
 
   if (this.isOverwinterCompatible()) {
     var mask = (this.overwintered ? 1 : 0)
     writeInt32(this.version | (mask << 31))  // Set overwinter bit
     writeUInt32(this.versionGroupId)
-  } else if (this.isDashSpecialTransaction()) {
+  } else if (this.isDashSpecialTransaction() || isDecred) {
     writeUInt16(this.version)
     writeUInt16(this.type)
   } else {
@@ -1113,7 +1142,7 @@ Transaction.prototype.__toBuffer = function (buffer, initialOffset, __allowWitne
 
   var hasWitnesses = __allowWitness && this.hasWitnesses()
 
-  if (hasWitnesses) {
+  if (hasWitnesses && !isDecred) {
     writeUInt8(Transaction.ADVANCED_TRANSACTION_MARKER)
     writeUInt8(Transaction.ADVANCED_TRANSACTION_FLAG)
   }
@@ -1127,7 +1156,11 @@ Transaction.prototype.__toBuffer = function (buffer, initialOffset, __allowWitne
   this.ins.forEach(function (txIn) {
     writeSlice(txIn.hash)
     writeUInt32(txIn.index)
-    writeVarSlice(txIn.script)
+    if (isDecred) {
+      writeUInt8(txIn.tree)
+    } else {
+      writeVarSlice(txIn.script)
+    }
     writeUInt32(txIn.sequence)
   })
 
@@ -1140,17 +1173,40 @@ Transaction.prototype.__toBuffer = function (buffer, initialOffset, __allowWitne
     } else {
       writeSlice(txOut.valueBuffer)
     }
-
+    if (isDecred) writeUInt16(txOut.version)
     writeVarSlice(txOut.script)
   })
 
-  if (hasWitnesses) {
-    this.ins.forEach(function (input) {
-      writeVector(input.witness)
-    })
+  if (isDecred) {
+    writeUInt32(this.locktime)
+    writeUInt32(this.expiry)
   }
 
-  writeUInt32(this.locktime)
+  if (hasWitnesses) {
+    if (isDecred) {
+      writeVarInt(this.ins.length)
+      this.ins.forEach(function (input) {
+        if (Transaction.USE_STRING_VALUES) {
+          writeUInt64asString(input.witness.value)
+        } else if (!input.witness.valueBuffer) {
+          writeUInt64(input.witness.value)
+        } else {
+          writeSlice(input.witness.valueBuffer)
+        }
+        writeUInt32(input.witness.height)
+        writeUInt32(input.witness.blockIndex)
+        writeVarSlice(input.witness.script)
+      })
+    } else {
+      this.ins.forEach(function (input) {
+        writeVector(input.witness)
+      })
+    }
+  }
+
+  if (!isDecred) {
+    writeUInt32(this.locktime)
+  }
 
   if (this.isOverwinterCompatible()) {
     writeUInt32(this.expiryHeight)

@@ -409,9 +409,10 @@ describe('Transaction', function () {
     })
   })
 
-  describe('fromBuffer/fromHex for decred', function () {
+  describe('fromBuffer/fromHex and toBuffer/toHex for decred', function () {
     fixtures.decred.valid.forEach(function (testData) {
       it('parses ' + testData.description, function () {
+        // Test fromHex.
         const tx = Transaction.fromHex(testData.hex, networks.decred)
         assert.equal(tx.version, testData.version)
         assert.equal(tx.ins.length, testData.insLength)
@@ -420,7 +421,9 @@ describe('Transaction', function () {
         assert.equal(tx.locktime, testData.locktime)
         assert.equal(tx.expiry, testData.expiry)
         for (var i = 0; i < tx.ins.length; i++) {
-          assert.equal(tx.ins[i].hash.reverse().toString('hex'), testData.ins[i].hash)
+          var hashCopy = Buffer.allocUnsafe(32)
+          tx.ins[i].hash.copy(hashCopy)
+          assert.equal(hashCopy.reverse().toString('hex'), testData.ins[i].hash)
           assert.equal(tx.ins[i].index, testData.ins[i].index)
           assert.equal(tx.ins[i].tree, testData.ins[i].tree)
           assert.equal(tx.ins[i].witness.script.toString('hex'), testData.ins[i].script)
@@ -434,8 +437,12 @@ describe('Transaction', function () {
           assert.equal(tx.outs[i].script.toString('hex'), testData.outs[i].script)
           assert.equal(tx.outs[i].version, testData.outs[i].version)
         }
+        // Test toHex.
+        const h = tx.toHex()
+        assert.equal(h, testData.hex)
       })
     })
+    // Test failure modes.
     fixtures.decred.invalid.forEach(function (f) {
       it('throws ' + f.exception + ' for ' + f.description, function () {
         assert.throws(function () {
