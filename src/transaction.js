@@ -626,9 +626,9 @@ Transaction.prototype.decredTransactionByteLength = function () {
   byteLength += this.outs.reduce(function (sum, output) {
     sum += 8 + 2 // value + script version
     sum += varSliceSize(output.script)
-    sum += 4 + 4 // block height + block index
     return sum
   }, 0)
+  byteLength += 4 + 4 // block height + block index
   return byteLength
 }
 
@@ -1085,6 +1085,93 @@ Transaction.prototype.hashForGoldSignature = function (inIndex, prevOutScript, i
   } else {
     return this.hashForSignature(inIndex, prevOutScript, nForkHashType)
   }
+}
+
+Transaction.prototype.decredSigHashPrefixByteLength = function () {
+  var byteLength = 4 + varuint.encodingLength(this.ins.length) // version + nIns
+  byteLength += this.ins.reduce(function (sum, input) {
+    return sum + 32 + 4 + 1 + 4 // prevOut hash + index + tree + sequence
+  }, 0)
+  byteLength += varuint.encodingLength(this.outs.length)
+  byteLength += this.outs.reduce(function (sum, output) {
+    sum += 8 + 2 // value + script version
+    sum += varSliceSize(output.script)
+    return sum
+  }, 0)
+  byteLength += 4 + 4 // block height + block index
+  return byteLength
+}
+
+Transaction.prototype.decredSigHashWitnessByteLength = function (script) {
+  var byteLength = 4 // version
+  byteLength += varuint.encodingLength(this.ins.length)
+  byteLength += this.ins.length - 1 // lengths for null scripts
+  byteLength += varSliceSize(script)
+  return byteLength
+}
+
+Transaction.prototype.hashForDecredSignature = function (script, inIdx, hashType) {
+  const sigHashMask = 0x1f
+  if ((hashType & sigHashMask) !== Transaction.SIGHASH_ALL) {
+    throw new Error('hashType not supported.')
+  }
+  if (this.ins.length < inIdx) {
+    throw new Error('Index out of range.')
+  }
+  // sigHashSerializePrefix indicates the serialization does not include
+  // any witness data.
+  const sigHashSerializePrefix = 1
+  // sigHashSerializeWitness indicates the serialization only contains
+  // witness data.
+  const sigHashSerializeWitness = 3
+  const prefixLen = this.decredSigHashPrefixByteLength()
+  const witnessLen = this.decredSigHashWitnessByteLength(script)
+  var buffW = new BufferWriter(prefixLen + witnessLen)
+  // This is prefix data.
+  buffW.writeUInt16(this.version)
+  buffW.writeUInt16(sigHashSerializePrefix)
+  buffW.writeVarInt(this.ins.length)
+  this.ins.forEach(function (txIn) {
+    buffW.writeSlice(txIn.hash)
+    buffW.writeUInt32(txIn.index)
+    buffW.writeUInt8(txIn.tree)
+    buffW.writeUInt32(txIn.sequence)
+  })
+  buffW.writeVarInt(this.outs.length)
+  this.outs.forEach(function (txOut) {
+    if (Transaction.USE_STRING_VALUES) {
+      buffW.writeUInt64asString(txOut.value)
+    } else if (!txOut.valueBuffer) {
+      buffW.writeUInt64(txOut.value)
+    } else {
+      buffW.writeSlice(txOut.valueBuffer)
+    }
+    buffW.writeUInt16(txOut.version)
+    buffW.writeVarSlice(txOut.script)
+  })
+  buffW.writeUInt32(this.locktime)
+  buffW.writeUInt32(this.expiry)
+  // The following is witness data.
+  buffW.writeUInt16(this.version)
+  buffW.writeUInt16(sigHashSerializeWitness)
+  buffW.writeVarInt(this.ins.length)
+  this.ins.forEach(function (input, idx) {
+    if (idx === inIdx) {
+      buffW.writeVarSlice(script)
+    } else {
+      buffW.writeVarInt(0)
+    }
+  })
+  const buff = buffW.getBuffer()
+  const prefix = buff.slice(0, prefixLen)
+  const witness = buff.slice(prefixLen)
+  const prefixHash = bcrypto.blake256(prefix)
+  const witnessHash = bcrypto.blake256(witness)
+  var sigHashBuff = Buffer.allocUnsafe(4 + 32 * 2)
+  var offset = sigHashBuff.writeUInt32LE(hashType, 0)
+  offset += prefixHash.copy(sigHashBuff, offset)
+  witnessHash.copy(sigHashBuff, offset)
+  return bcrypto.blake256(sigHashBuff)
 }
 
 Transaction.prototype.getHash = function () {

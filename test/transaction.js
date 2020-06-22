@@ -451,4 +451,13 @@ describe('Transaction', function () {
       })
     })
   })
+  describe('for decred', function () {
+    fixtures.decred.hashforsigvalid.forEach(function (testData) {
+      it('retrieves sig hash for ' + testData.name, function () {
+        const tx = Transaction.fromHex(testData.tx, networks.decred)
+        const hash = tx.hashForDecredSignature(Buffer.from(testData.script, 'hex'), testData.idx, testData.hashType)
+        assert.equal(hash.toString('hex'), testData.want)
+      })
+    })
+  })
 })
