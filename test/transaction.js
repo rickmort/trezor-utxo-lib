@@ -415,9 +415,9 @@ describe('Transaction', function () {
         // Test fromHex.
         const tx = Transaction.fromHex(testData.hex, networks.decred)
         assert.equal(tx.version, testData.version)
+        assert.equal(tx.type, testData.type)
         assert.equal(tx.ins.length, testData.insLength)
         assert.equal(tx.outs.length, testData.outsLength)
-        assert.equal(tx.type, testData.type)
         assert.equal(tx.locktime, testData.locktime)
         assert.equal(tx.expiry, testData.expiry)
         for (var i = 0; i < tx.ins.length; i++) {
@@ -426,11 +426,13 @@ describe('Transaction', function () {
           assert.equal(hashCopy.reverse().toString('hex'), testData.ins[i].hash)
           assert.equal(tx.ins[i].index, testData.ins[i].index)
           assert.equal(tx.ins[i].tree, testData.ins[i].tree)
-          assert.equal(tx.ins[i].witness.script.toString('hex'), testData.ins[i].script)
           assert.equal(tx.ins[i].sequence, testData.ins[i].sequence)
-          assert.equal(tx.ins[i].witness.value, testData.ins[i].value)
-          assert.equal(tx.ins[i].witness.height, testData.ins[i].height)
-          assert.equal(tx.ins[i].witness.blockIndex, testData.ins[i].blockIndex)
+          if (tx.hasWitnesses()) {
+            assert.equal(tx.ins[i].witness.script.toString('hex'), testData.ins[i].script)
+            assert.equal(tx.ins[i].witness.value, testData.ins[i].value)
+            assert.equal(tx.ins[i].witness.height, testData.ins[i].height)
+            assert.equal(tx.ins[i].witness.blockIndex, testData.ins[i].blockIndex)
+          }
         }
         for (i = 0; i < tx.outs.length; i++) {
           assert.equal(tx.outs[i].value, testData.outs[i].value)
@@ -455,7 +457,7 @@ describe('Transaction', function () {
     fixtures.decred.hashforsigvalid.forEach(function (testData) {
       it('retrieves sig hash for ' + testData.name, function () {
         const tx = Transaction.fromHex(testData.tx, networks.decred)
-        const hash = tx.hashForDecredSignature(Buffer.from(testData.script, 'hex'), testData.idx, testData.hashType)
+        const hash = tx.hashForDecredSignature(testData.idx, Buffer.from(testData.script, 'hex'), testData.hashType)
         assert.equal(hash.toString('hex'), testData.want)
       })
     })

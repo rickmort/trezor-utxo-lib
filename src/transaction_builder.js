@@ -205,6 +205,9 @@ function fixMultisigOrder (input, transaction, vin, value, network) {
           hash = transaction.hashForGoldSignature(vin, input.signScript, value, parsed.hashType)
           break
         case coins.ZEC:
+        case coins.DCR:
+          hash = transaction.hashForDecredSignature(vin, input.signScript, parsed.hashType)
+          break
         case coins.TAZ:
           if (value === undefined) {
             return false
@@ -582,6 +585,7 @@ TransactionBuilder.fromTransaction = function (transaction, network) {
   if (txb.network.coin !== transaction.network.coin) {
     throw new Error('This transaction is incompatible with the transaction builder')
   }
+  const isDecred = coins.isDecred(txbNetwork)
 
   // Copy transaction fields
   txb.setVersion(transaction.version, transaction.overwintered)
@@ -623,9 +627,17 @@ TransactionBuilder.fromTransaction = function (transaction, network) {
       sequence: txIn.sequence,
       script: txIn.script,
       witness: txIn.witness,
-      value: txIn.value
+      value: txIn.value,
+      isDecred: isDecred,
+      tree: txIn.tree
     })
   })
+
+  if (isDecred) {
+    // Witness data is not copied if present.
+    txb.tx.type = Transaction.DECRED_TX_SERIALIZE_NO_WITNESS
+    txb.tx.expiry = transaction.expiry
+  }
 
   // fix some things not possible through the public API
   txb.inputs.forEach(function (input, i) {
@@ -633,6 +645,26 @@ TransactionBuilder.fromTransaction = function (transaction, network) {
   })
 
   return txb
+}
+
+TransactionBuilder.prototype.addDecredInput = function (txHash, vout, tree, sequence) {
+  if (!this.__canModifyInputs()) {
+    throw new Error('No, this would invalidate signatures')
+  }
+  // is it a hex string?
+  if (typeof txHash === 'string') {
+    // transaction hashs's are displayed in reverse order, un-reverse it
+    txHash = Buffer.from(txHash, 'hex').reverse()
+  // is it a Transaction object?
+  } else if (txHash instanceof Transaction) {
+    txHash = txHash.getHash()
+  }
+
+  return this.__addInputUnsafe(txHash, vout, {
+    sequence: sequence,
+    isDecred: true,
+    tree: tree
+  })
 }
 
 TransactionBuilder.prototype.addInput = function (txHash, vout, sequence, prevOutScript) {
@@ -702,7 +734,12 @@ TransactionBuilder.prototype.__addInputUnsafe = function (txHash, vout, options)
     input.prevOutType = prevOutType || btemplates.classifyOutput(options.prevOutScript)
   }
 
-  var vin = this.tx.addInput(txHash, vout, options.sequence, options.scriptSig)
+  var vin
+  if (options.isDecred) {
+    vin = this.tx.addDecredInput(txHash, vout, options.tree, options.sequence)
+  } else {
+    vin = this.tx.addInput(txHash, vout, options.sequence, options.scriptSig)
+  }
   this.inputs[vin] = input
   this.prevTxMap[prevTxOut] = vin
   return vin

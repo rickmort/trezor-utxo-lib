@@ -73,7 +73,7 @@ Transaction.ADVANCED_TRANSACTION_FLAG = 0x01
 
 var EMPTY_SCRIPT = Buffer.allocUnsafe(0)
 var EMPTY_WITNESS = []
-var EMPTY_WITNESS_DECRED = {}
+var EMPTY_DECRED_WITNESS = {}
 var ZERO = Buffer.from('0000000000000000000000000000000000000000000000000000000000000000', 'hex')
 var ONE = Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')
 // Used to represent the absence of a value
@@ -103,6 +103,8 @@ Transaction.DASH_QUORUM_COMMITMENT = 6
 
 Transaction.DECRED_TX_VERSION = 1
 Transaction.DECRED_TX_SERIALIZE_FULL = 0
+Transaction.DECRED_TX_SERIALIZE_NO_WITNESS = 1
+Transaction.DECRED_SCRIPT_VERSION = 0
 
 Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStrict) {
   var offset = 0
@@ -307,11 +309,16 @@ Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStric
   if (coins.isDecred(network)) {
     tx.type = tx.version >> 16
     tx.version = tx.version & 0xffff
-    if (tx.version !== Transaction.DECRED_TX_VERSION ||
-      tx.type !== Transaction.DECRED_TX_SERIALIZE_FULL) {
+    if (tx.version !== Transaction.DECRED_TX_VERSION) {
+      throw new Error('Unsupported Decred transaction version')
+    }
+    if (tx.type !== Transaction.DECRED_TX_SERIALIZE_FULL &&
+        tx.type !== Transaction.DECRED_TX_SERIALIZE_NO_WITNESS) {
       throw new Error('Unsupported Decred transaction type')
     }
-    hasWitnesses = true
+    if (tx.type === Transaction.DECRED_TX_SERIALIZE_FULL) {
+      hasWitnesses = true
+    }
   }
 
   var marker = buffer.readUInt8(offset)
@@ -340,7 +347,7 @@ Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStric
     }
     if (coins.isDecred(network)) {
       vin.tree = readUInt8()
-      vin.witness = EMPTY_WITNESS_DECRED
+      vin.witness = EMPTY_DECRED_WITNESS
     } else {
       vin.script = readVarSlice()
       vin.witness = EMPTY_WITNESS
@@ -356,7 +363,12 @@ Transaction.fromBuffer = function (buffer, network = networks.bitcoin, __noStric
 
   function readVout () {
     var vout = {value: Transaction.USE_STRING_VALUES ? readUInt64asString() : readUInt64()}
-    if (coins.isDecred(network)) vout.version = readUInt16()
+    if (coins.isDecred(network)) {
+      vout.version = readUInt16()
+      if (vout.version !== Transaction.DECRED_SCRIPT_VERSION) {
+        throw new Error('Unsupported Decred script version')
+      }
+    }
     vout.script = readVarSlice()
     return vout
   }
@@ -479,6 +491,28 @@ Transaction.prototype.isCoinbase = function () {
   return this.ins.length === 1 && Transaction.isCoinbaseHash(this.ins[0].hash)
 }
 
+Transaction.prototype.addDecredInput = function (hash, index, tree, sequence) {
+  typeforce(types.tuple(
+    types.Hash256bit,
+    types.UInt32,
+    types.UInt32,
+    types.maybe(types.UInt32),
+  ), arguments)
+
+  if (types.Null(sequence)) {
+    sequence = Transaction.DEFAULT_SEQUENCE
+  }
+
+  // Add the input and return the input's index
+  return (this.ins.push({
+    hash: hash,
+    index: index,
+    tree: tree,
+    sequence: sequence,
+    witness: EMPTY_DECRED_WITNESS
+  }) - 1)
+}
+
 Transaction.prototype.addInput = function (hash, index, sequence, scriptSig) {
   typeforce(types.tuple(
     types.Hash256bit,
@@ -504,14 +538,24 @@ Transaction.prototype.addInput = function (hash, index, sequence, scriptSig) {
 Transaction.prototype.addOutput = function (scriptPubKey, value) {
   typeforce(types.tuple(types.Buffer, types.Satoshi), arguments)
 
-  // Add the output and return the output's index
-  return (this.outs.push({
+  var out = {
     script: scriptPubKey,
     value: value
-  }) - 1)
+  }
+
+  // Decred currently only uses version 0. This may change in the future.
+  if (coins.isDecred(this.network)) {
+    out.version = Transaction.DECRED_SCRIPT_VERSION
+  }
+
+  // Add the output and return the output's index
+  return (this.outs.push(out) - 1)
 }
 
 Transaction.prototype.hasWitnesses = function () {
+  if (coins.isDecred(this.network)) {
+    return this.type === Transaction.DECRED_TX_SERIALIZE_FULL
+  }
   return this.ins.some(function (x) {
     return x.witness.length !== 0
   })
@@ -611,17 +655,19 @@ Transaction.prototype.zcashTransactionByteLength = function () {
 Transaction.prototype.decredTransactionByteLength = function () {
   var byteLength = 4 + varuint.encodingLength(this.ins.length) // version + nIns
   var nWitness = 0
+  const hasWitnesses = this.hasWitnesses()
   byteLength += this.ins.reduce(function (sum, input) {
     sum += 32 + 4 + 1 + 4 // prevOut hash + index + tree + sequence
-    // If witness is not empty.
-    if (input.witness.length !== 0) {
+    if (hasWitnesses) {
       nWitness += 1
       sum += 8 + 4 + 4 // value + height + block index
       sum += varSliceSize(input.witness.script)
     }
     return sum
   }, 0)
-  byteLength += varuint.encodingLength(nWitness)
+  if (hasWitnesses) {
+    byteLength += varuint.encodingLength(nWitness)
+  }
   byteLength += varuint.encodingLength(this.outs.length)
   byteLength += this.outs.reduce(function (sum, output) {
     sum += 8 + 2 // value + script version
@@ -1110,7 +1156,7 @@ Transaction.prototype.decredSigHashWitnessByteLength = function (script) {
   return byteLength
 }
 
-Transaction.prototype.hashForDecredSignature = function (script, inIdx, hashType) {
+Transaction.prototype.hashForDecredSignature = function (inIdx, script, hashType) {
   const sigHashMask = 0x1f
   if ((hashType & sigHashMask) !== Transaction.SIGHASH_ALL) {
     throw new Error('hashType not supported.')

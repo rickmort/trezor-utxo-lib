@@ -136,6 +136,34 @@ describe('TransactionBuilder', function () {
       })
     })
 
+    fixtures.decred.valid.forEach(function (testData) {
+      it('returns TransactionBuilder, with ' + testData.description, function () {
+        var network = NETWORKS['decred']
+        var tx = Transaction.fromHex(testData.hex, network)
+        var txb = TransactionBuilder.fromTransaction(tx, network)
+        assert.equal(txb.tx.version, testData.version)
+        // Tx no longer has witness data.
+        assert.equal(txb.tx.type, Transaction.DECRED_TX_SERIALIZE_NO_WITNESS)
+        assert.equal(txb.tx.ins.length, testData.insLength)
+        assert.equal(txb.tx.outs.length, testData.outsLength)
+        assert.equal(txb.tx.locktime, testData.locktime)
+        assert.equal(txb.tx.expiry, testData.expiry)
+        for (var i = 0; i < tx.ins.length; i++) {
+          var hashCopy = Buffer.allocUnsafe(32)
+          txb.tx.ins[i].hash.copy(hashCopy)
+          assert.equal(hashCopy.reverse().toString('hex'), testData.ins[i].hash)
+          assert.equal(txb.tx.ins[i].index, testData.ins[i].index)
+          assert.equal(txb.tx.ins[i].tree, testData.ins[i].tree)
+          assert.equal(txb.tx.ins[i].sequence, testData.ins[i].sequence)
+        }
+        for (i = 0; i < tx.outs.length; i++) {
+          assert.equal(txb.tx.outs[i].value, testData.outs[i].value)
+          assert.equal(txb.tx.outs[i].script.toString('hex'), testData.outs[i].script)
+          assert.equal(txb.tx.outs[i].version, testData.outs[i].version)
+        }
+      })
+    })
+
     fixtures.zcash.valid.forEach(function (testData) {
       it('returns TransactionBuilder, with ' + testData.description, function () {
         var network = NETWORKS['zcash']
