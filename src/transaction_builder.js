@@ -204,10 +204,10 @@ function fixMultisigOrder (input, transaction, vin, value, network) {
         case coins.BTG:
           hash = transaction.hashForGoldSignature(vin, input.signScript, value, parsed.hashType)
           break
-        case coins.ZEC:
         case coins.DCR:
           hash = transaction.hashForDecredSignature(vin, input.signScript, parsed.hashType)
           break
+        case coins.ZEC:
         case coins.TAZ:
           if (value === undefined) {
             return false
@@ -634,17 +634,30 @@ TransactionBuilder.fromTransaction = function (transaction, network) {
   })
 
   if (isDecred) {
-    // Witness data is not copied if present.
-    txb.tx.type = Transaction.DECRED_TX_SERIALIZE_NO_WITNESS
+    txb.tx.type = transaction.type
     txb.tx.expiry = transaction.expiry
+    if (txb.tx.hasWitnesses()) {
+      transaction.ins.forEach(function (txIn, vIn) {
+        txb.addDecredWitness(
+          vIn,
+          txIn.witness.value,
+          txIn.witness.height,
+          txIn.witness.blockIndex,
+          txIn.witness.script,
+        )
+      })
+    }
   }
-
   // fix some things not possible through the public API
   txb.inputs.forEach(function (input, i) {
     fixMultisigOrder(input, transaction, i, input.value, txbNetwork)
   })
 
   return txb
+}
+
+TransactionBuilder.prototype.addDecredWitness = function (vIn, value, height, blockIndex, sigScript) {
+  this.tx.addDecredWitness(vIn, value, height, blockIndex, sigScript)
 }
 
 TransactionBuilder.prototype.addDecredInput = function (txHash, vout, tree, sequence) {
@@ -772,6 +785,9 @@ TransactionBuilder.prototype.__build = function (allowIncomplete) {
   }
 
   var tx = this.tx.clone()
+  if (coins.isDecred(this.network)) {
+    return tx
+  }
   // Create script signatures from inputs
   this.inputs.forEach(function (input, i) {
     var scriptType = input.witnessScriptType || input.redeemScriptType || input.prevOutType
@@ -813,6 +829,10 @@ function canSign (input) {
 }
 
 TransactionBuilder.prototype.sign = function (vin, keyPair, redeemScript, hashType, witnessValue, witnessScript) {
+  if (coins.isDecred(this.network)) {
+    this.signDecred(vin, keyPair, redeemScript, witnessScript, hashType)
+    return
+  }
   debug('Signing transaction: (input: %d, hashType: %d, witnessVal: %s, witnessScript: %j)', vin, hashType, witnessValue, witnessScript)
   debug('Transaction Builder network: %j', this.network)
 
@@ -882,6 +902,15 @@ TransactionBuilder.prototype.sign = function (vin, keyPair, redeemScript, hashTy
   })
 
   if (!signed) throw new Error('Key pair cannot sign for this input')
+}
+
+TransactionBuilder.prototype.signDecred = function (vin, keyPair, redeemScript, witnessScript, hashType) {
+  debug('Signing transaction: (input: %d, hashType: %d, redeemScript: %s, witnessScript: %s)', vin, hashType, redeemScript, witnessScript)
+  debug('Transaction Builder network: %j', this.network)
+  const signatureHash = this.tx.hashForDecredSignature(vin, witnessScript, hashType)
+  debug('Calculated DCR sighash (%s)', signatureHash.toString('hex'))
+  const signature = keyPair.sign(signatureHash).toScriptSignature(hashType)
+  this.tx.ins[0].witness.script = bscript.compile([signature, redeemScript])
 }
 
 function signatureHashType (buffer) {

@@ -87,12 +87,19 @@ function construct (f, dontSign) {
 describe('TransactionBuilder', function () {
   // constants
   var keyPair = new ECPair(BigInteger.ONE)
-  var scripts = [
+  var bitcoinScripts = [
     '1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH',
     '1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP'
   ].map(function (x) {
     return baddress.toOutputScript(x)
   })
+  var decredScripts = [
+    'DsmcYVbP1Nmag2H4AS17UTvmWXmGeA7nLDx',
+    'DsRaGBSwZM6n1zTmGGpSwoi4VTjZp7F8guV'
+  ].map(function (x) {
+    return baddress.toOutputScript(x, NETWORKS.decred)
+  })
+  var scripts
   var txHash = Buffer.from('0e7cea811c0be9f73c0aca591034396e7264473fc25c1ca45195d7417b36cbe2', 'hex')
 
   describe('fromTransaction', function () {
@@ -142,8 +149,7 @@ describe('TransactionBuilder', function () {
         var tx = Transaction.fromHex(testData.hex, network)
         var txb = TransactionBuilder.fromTransaction(tx, network)
         assert.equal(txb.tx.version, testData.version)
-        // Tx no longer has witness data.
-        assert.equal(txb.tx.type, Transaction.DECRED_TX_SERIALIZE_NO_WITNESS)
+        assert.equal(txb.tx.type, testData.type)
         assert.equal(txb.tx.ins.length, testData.insLength)
         assert.equal(txb.tx.outs.length, testData.outsLength)
         assert.equal(txb.tx.locktime, testData.locktime)
@@ -155,12 +161,28 @@ describe('TransactionBuilder', function () {
           assert.equal(txb.tx.ins[i].index, testData.ins[i].index)
           assert.equal(txb.tx.ins[i].tree, testData.ins[i].tree)
           assert.equal(txb.tx.ins[i].sequence, testData.ins[i].sequence)
+          if (tx.hasWitnesses()) {
+            assert.equal(tx.ins[i].witness.script.toString('hex'), testData.ins[i].script)
+            assert.equal(tx.ins[i].witness.value, testData.ins[i].value)
+            assert.equal(tx.ins[i].witness.height, testData.ins[i].height)
+            assert.equal(tx.ins[i].witness.blockIndex, testData.ins[i].blockIndex)
+          }
         }
         for (i = 0; i < tx.outs.length; i++) {
           assert.equal(txb.tx.outs[i].value, testData.outs[i].value)
           assert.equal(txb.tx.outs[i].script.toString('hex'), testData.outs[i].script)
           assert.equal(txb.tx.outs[i].version, testData.outs[i].version)
         }
+      })
+    })
+    // Test failure modes.
+    fixtures.decred.invalid.forEach(function (f) {
+      it('throws ' + f.exception + ' for ' + f.description, function () {
+        assert.throws(function () {
+          var network = NETWORKS['decred']
+          var tx = Transaction.fromHex(f.hex, network)
+          TransactionBuilder.fromTransaction(tx, network)
+        }, new RegExp(f.exception))
       })
     })
 
@@ -238,16 +260,22 @@ describe('TransactionBuilder', function () {
     })
   })
 
-  var networksToTest = ['bitcoin', 'bitcoincash', 'bitcoingold', 'bitcoinsv', 'dash', 'litecoin', 'zcash']
+  var networksToTest = ['bitcoin', 'bitcoincash', 'bitcoingold', 'bitcoinsv', 'dash', 'litecoin', 'zcash', 'decred']
   networksToTest.forEach(function (network) {
     describe('addInput for ' + network, function () {
       var testNetwork = NETWORKS[network]
       var txb
       var testKeyPair = new ECPair(BigInteger.ONE, undefined, { network: testNetwork })
+      const isDecred = network === 'decred'
       beforeEach(function () {
         txb = new TransactionBuilder(testNetwork)
         if (coins.isZcashType(testNetwork)) {
           txb.setVersion(3)
+        }
+        if (isDecred) {
+          scripts = decredScripts
+        } else {
+          scripts = bitcoinScripts
         }
       })
 
@@ -285,7 +313,10 @@ describe('TransactionBuilder', function () {
         assert.deepEqual(txIn.hash, prevTx.getHash())
         assert.strictEqual(txIn.index, 1)
         assert.strictEqual(txIn.sequence, 54)
-        assert.strictEqual(txb.inputs[0].prevOutScript, scripts[1])
+        // Decred stores previous scripts as part of witness data.
+        if (!isDecred) {
+          assert.strictEqual(txb.inputs[0].prevOutScript, scripts[1])
+        }
       })
 
       it('returns the input index', function () {
@@ -309,10 +340,16 @@ describe('TransactionBuilder', function () {
       var testNetwork = NETWORKS[network]
       var txb
       var testKeyPair = new ECPair(BigInteger.ONE, undefined, { network: testNetwork })
+      const isDecred = network === 'decred'
       beforeEach(function () {
         txb = new TransactionBuilder(testNetwork)
         if (coins.isZcashType(testNetwork)) {
           txb.setVersion(3)
+        }
+        if (isDecred) {
+          scripts = decredScripts
+        } else {
+          scripts = bitcoinScripts
         }
       })
 

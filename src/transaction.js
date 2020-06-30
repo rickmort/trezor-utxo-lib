@@ -53,7 +53,7 @@ function Transaction (network = networks.bitcoin) {
     this.extraPayload = Buffer.alloc(0)
   }
   if (coins.isDecred(network)) {
-    this.type = 0
+    this.type = Transaction.DECRED_TX_SERIALIZE_NO_WITNESS
     this.expiry = 0
   }
   if (coins.hasTimestamp(network)) {
@@ -73,7 +73,7 @@ Transaction.ADVANCED_TRANSACTION_FLAG = 0x01
 
 var EMPTY_SCRIPT = Buffer.allocUnsafe(0)
 var EMPTY_WITNESS = []
-var EMPTY_DECRED_WITNESS = {}
+const EMPTY_DECRED_WITNESS = {}
 var ZERO = Buffer.from('0000000000000000000000000000000000000000000000000000000000000000', 'hex')
 var ONE = Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')
 // Used to represent the absence of a value
@@ -491,6 +491,35 @@ Transaction.prototype.isCoinbase = function () {
   return this.ins.length === 1 && Transaction.isCoinbaseHash(this.ins[0].hash)
 }
 
+Transaction.prototype.addDecredWitness = function (vIn, value, height, blockIndex, sigScript) {
+  typeforce(types.tuple(
+    types.UInt32,
+    types.Satoshi,
+    types.UInt32,
+    types.UInt32,
+    types.maybe(types.Buffer)
+  ), arguments)
+  const insLen = this.ins.length
+  if (vIn >= insLen) {
+    throw new Error('input does not exist')
+  }
+  var nWitnesses = 1
+  this.ins.forEach(function (txIn, vInIdx) {
+    if (vInIdx !== vIn) {
+      if (Object.keys(txIn.witness).length > 0) nWitnesses += 1
+    }
+  })
+  const witness = {
+    'value': value,
+    'height': height,
+    'blockIndex': blockIndex,
+    'script': sigScript
+  }
+  this.ins[vIn].witness = witness
+  // If all ins have a witness, this is a full transaction.
+  this.type = nWitnesses === insLen ? Transaction.DECRED_TX_SERIALIZE_FULL : Transaction.DECRED_TX_SERIALIZE_NO_WITNESS
+}
+
 Transaction.prototype.addDecredInput = function (hash, index, tree, sequence) {
   typeforce(types.tuple(
     types.Hash256bit,
@@ -503,6 +532,8 @@ Transaction.prototype.addDecredInput = function (hash, index, tree, sequence) {
     sequence = Transaction.DEFAULT_SEQUENCE
   }
 
+  // The witness must be checked before this can be considered a full tx.
+  this.type = Transaction.DECRED_TX_NO_WITNESS
   // Add the input and return the input's index
   return (this.ins.push({
     hash: hash,
@@ -741,6 +772,18 @@ Transaction.prototype.clone = function () {
       value: txOut.value
     }
   })
+
+  if (coins.isDecred(this.network)) {
+    newTx.type = this.type
+    newTx.expiry = this.expiry
+    this.ins.forEach(function (vin, idx) {
+      newTx.ins[idx].tree = vin.tree
+    })
+    this.outs.forEach(function (vout, idx) {
+      newTx.outs[idx].version = vout.version
+    })
+  }
+
   if (this.isSaplingCompatible()) {
     newTx.vShieldedSpend = this.vShieldedSpend.map(function (shieldedSpend) {
       return {
@@ -1163,6 +1206,9 @@ Transaction.prototype.hashForDecredSignature = function (inIdx, script, hashType
   }
   if (this.ins.length < inIdx) {
     throw new Error('Index out of range.')
+  }
+  if (this.type !== Transaction.DECRED_TX_SERIALIZE_FULL) {
+    throw new Error('Missing witness data.')
   }
   // sigHashSerializePrefix indicates the serialization does not include
   // any witness data.
