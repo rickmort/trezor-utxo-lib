@@ -1176,39 +1176,51 @@ Transaction.prototype.hashForGoldSignature = function (inIndex, prevOutScript, i
   }
 }
 
-Transaction.prototype.decredSigHashPrefixByteLength = function () {
-  var byteLength = 4 + varuint.encodingLength(this.ins.length) // version + nIns
-  byteLength += this.ins.reduce(function (sum, input) {
+Transaction.prototype.decredSigHashPrefixByteLength = function (hashType, ins, outs, idx) {
+  const sigHashMask = 0x1f
+  var byteLength = 4 + varuint.encodingLength(ins.length) // version + nIns
+  byteLength += ins.reduce(function (sum, input) {
     return sum + 32 + 4 + 1 + 4 // prevOut hash + index + tree + sequence
   }, 0)
-  byteLength += varuint.encodingLength(this.outs.length)
-  byteLength += this.outs.reduce(function (sum, output) {
+  byteLength += varuint.encodingLength(outs.length)
+  byteLength += outs.reduce(function (sum, output, outIdx) {
     sum += 8 + 2 // value + script version
-    sum += varSliceSize(output.script)
+    if ((hashType & sigHashMask) === Transaction.SIGHASH_SINGLE &&
+      outIdx !== idx) {
+      sum += 1
+    } else {
+      sum += varSliceSize(output.script)
+    }
     return sum
   }, 0)
   byteLength += 4 + 4 // block height + block index
   return byteLength
 }
 
-Transaction.prototype.decredSigHashWitnessByteLength = function (script) {
+Transaction.prototype.decredSigHashWitnessByteLength = function (ins, script) {
   var byteLength = 4 // version
-  byteLength += varuint.encodingLength(this.ins.length)
-  byteLength += this.ins.length - 1 // lengths for null scripts
+  byteLength += varuint.encodingLength(ins.length)
+  byteLength += ins.length - 1 // lengths for null scripts
   byteLength += varSliceSize(script)
   return byteLength
 }
 
 Transaction.prototype.hashForDecredSignature = function (inIdx, script, hashType) {
   const sigHashMask = 0x1f
-  if ((hashType & sigHashMask) !== Transaction.SIGHASH_ALL) {
-    throw new Error('hashType not supported.')
-  }
-  if (this.ins.length < inIdx) {
+  if (this.ins.length <= inIdx) {
     throw new Error('Index out of range.')
   }
   if (this.type !== Transaction.DECRED_TX_SERIALIZE_FULL) {
     throw new Error('Missing witness data.')
+  }
+  // The SigHashAnyOneCanPay flag specifies that the signature will only
+  // commit to the input being signed. Otherwise, it will commit to all
+  // inputs.
+  var ins = this.ins
+  var signIdx = inIdx
+  if ((hashType & Transaction.SIGHASH_ANYONECANPAY) !== 0) {
+    ins = ins.slice(inIdx, inIdx + 1)
+    signIdx = 0
   }
   // sigHashSerializePrefix indicates the serialization does not include
   // any witness data.
@@ -1216,39 +1228,68 @@ Transaction.prototype.hashForDecredSignature = function (inIdx, script, hashType
   // sigHashSerializeWitness indicates the serialization only contains
   // witness data.
   const sigHashSerializeWitness = 3
-  const prefixLen = this.decredSigHashPrefixByteLength()
-  const witnessLen = this.decredSigHashWitnessByteLength(script)
+  // SigHashAll (and undefined signature hash types):
+  //   Commits to all outputs.
+  // SigHashNone:
+  //   Commits to no outputs with all input sequences except the input
+  //   being signed replaced with 0.
+  // SigHashSingle:
+  //   Commits to a single output at the same index as the input being
+  //   signed.  All outputs before that index are cleared by setting the
+  //   value to -1 and pkscript to nil and all outputs after that index
+  //   are removed.  Like SigHashNone, all input sequences except the
+  //   input being signed are replaced by 0.
+  // SigHashAnyOneCanPay:
+  //   Commits to only the input being signed.  Bit flag that can be
+  //   combined with the other signature hash types.  Without this flag
+  //   set, commits to all inputs.
+  var outs = this.outs
+  const reqSigs = hashType & sigHashMask
+  if (reqSigs === Transaction.SIGHASH_NONE) outs = []
+  if (reqSigs === Transaction.SIGHASH_SINGLE) outs = outs.slice(0, inIdx + 1)
+  const prefixLen = this.decredSigHashPrefixByteLength(hashType, ins, outs, inIdx)
+  const witnessLen = this.decredSigHashWitnessByteLength(ins, script)
   var buffW = new BufferWriter(prefixLen + witnessLen)
-  // This is prefix data.
   buffW.writeUInt16(this.version)
   buffW.writeUInt16(sigHashSerializePrefix)
-  buffW.writeVarInt(this.ins.length)
-  this.ins.forEach(function (txIn) {
+  buffW.writeVarInt(ins.length)
+  ins.forEach(function (txIn, idx) {
     buffW.writeSlice(txIn.hash)
     buffW.writeUInt32(txIn.index)
     buffW.writeUInt8(txIn.tree)
-    buffW.writeUInt32(txIn.sequence)
+    var sequence = txIn.sequence
+    if (((hashType & sigHashMask) === Transaction.SIGHASH_NONE ||
+         (hashType & sigHashMask) === Transaction.SIGHASH_SINGLE) &&
+          idx !== signIdx) sequence = 0
+    buffW.writeUInt32(sequence)
   })
-  buffW.writeVarInt(this.outs.length)
-  this.outs.forEach(function (txOut) {
-    if (Transaction.USE_STRING_VALUES) {
-      buffW.writeUInt64asString(txOut.value)
-    } else if (!txOut.valueBuffer) {
-      buffW.writeUInt64(txOut.value)
+  buffW.writeVarInt(outs.length)
+  outs.forEach(function (txOut, idx) {
+    if (((hashType & sigHashMask) === Transaction.SIGHASH_SINGLE) &&
+          idx !== inIdx) {
+      buffW.writeSlice(VALUE_UINT64_MAX)
+      buffW.writeUInt16(txOut.version)
+      buffW.writeVarInt(0)
     } else {
-      buffW.writeSlice(txOut.valueBuffer)
+      if (Transaction.USE_STRING_VALUES) {
+        buffW.writeUInt64asString(txOut.value)
+      } else if (!txOut.valueBuffer) {
+        buffW.writeUInt64(txOut.value)
+      } else {
+        buffW.writeSlice(txOut.valueBuffer)
+      }
+      buffW.writeUInt16(txOut.version)
+      buffW.writeVarSlice(txOut.script)
     }
-    buffW.writeUInt16(txOut.version)
-    buffW.writeVarSlice(txOut.script)
   })
   buffW.writeUInt32(this.locktime)
   buffW.writeUInt32(this.expiry)
   // The following is witness data.
   buffW.writeUInt16(this.version)
   buffW.writeUInt16(sigHashSerializeWitness)
-  buffW.writeVarInt(this.ins.length)
-  this.ins.forEach(function (input, idx) {
-    if (idx === inIdx) {
+  buffW.writeVarInt(ins.length)
+  ins.forEach(function (input, idx) {
+    if (idx === signIdx) {
       buffW.writeVarSlice(script)
     } else {
       buffW.writeVarInt(0)
